@@ -72,6 +72,10 @@ pub struct ObjectModel {
     /// Laid on the ground (`[surface]` or a ground-layer `[rendertype]`): the terrain is cut
     /// under it.
     pub surface: bool,
+    /// A flat marking laid on the road with no ground-layer `[rendertype]` (bays, arrows: all
+    /// of it within a few centimetres of its foot): drawn with the road's depth pull, else
+    /// the road pulled towards the eye hides it (openOMSI lifts such objects with the roads).
+    pub decal: bool,
     /// `[terrainhole]` cutter meshes (object frame).
     pub holes: Vec<MeshData>,
     /// Its own lanes (`[path]`: junctions, stops), in its frame.
@@ -466,6 +470,11 @@ pub fn texture_dirs(omsi: &Path, content: &Path, dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Every texel of the picture black (its alpha aside).
+fn all_black(p: &std::path::Path) -> bool {
+    omsi_texture::decode_file(p).map(|i| !i.rgba.is_empty() && i.rgba.chunks_exact(4).all(|c| c[0] == 0 && c[1] == 0 && c[2] == 0)).unwrap_or(false)
+}
+
 fn find_tex(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     if name.trim().is_empty() {
         return None;
@@ -575,7 +584,15 @@ pub(crate) fn load_object(path: &Path, omsi: &Path, content: &Path) -> Option<Ob
                     _ => Alpha::Opaque,
                 };
                 let glow = def.and_then(|d| d.nightmap.as_ref().and_then(|n| find_tex(n, &dirs)).map(|p| (p, true)).or_else(|| d.lightmap.as_ref().and_then(|l| find_tex(&l.0, &dirs)).map(|p| (p, false))));
-                Material { texture: find_tex(&mat.texture, &dirs), color: mat.diffuse, alpha, glow }
+                let mut texture = find_tex(&mat.texture, &dirs);
+                // a texture all black under a night map only shapes the glow (NCCR's stop
+                // markers): the editor shows the night map's picture by day too, not a black disc
+                if let (Some(t), Some((n, true))) = (&texture, &glow)
+                    && all_black(t)
+                {
+                    texture = Some(n.clone());
+                }
+                Material { texture, color: mat.diffuse, alpha, glow }
             })
             .collect();
         parts.push(Part { mesh, materials, texts, freetex, visible, faded });
@@ -647,6 +664,7 @@ pub(crate) fn load_object(path: &Path, omsi: &Path, content: &Path) -> Option<Ob
     }
     let attachments = sco.attachments.iter().map(crate::place::attachment_matrix).collect();
     let surface = sco.render_type.is_ground_layer() || sco.surface;
+    let decal = !surface && !parts.is_empty() && tree.is_none() && lo.z >= -0.05 && hi.z <= 0.25;
     let mut holes = Vec::new();
     if sco.tree.is_none() && !sco.only_editor {
         for (dir, file) in sco.terrain_hole_sources(&model) {
@@ -659,7 +677,7 @@ pub(crate) fn load_object(path: &Path, omsi: &Path, content: &Path) -> Option<Ob
     }
     // (a tree with an editor-only helper box is seen in the game: only the box is not)
     let technical = (sco.only_editor && tree.is_none()) || sco.is_entry_point || sco.is_car_park || sco.is_help_arrow || (parts.is_empty() && tree.is_none());
-    Some(ObjectModel { parts, lo, hi, abs_height: sco.absolute_height(), tree, helpers, attachments, surface, holes, technical, editor_parts: sco.only_editor, paths: sco.paths.clone(), texts: model.text_textures.clone(), labels: label_names, lights: sco.traffic_lights.clone(), cycle: sco.traffic_lights_group, light_head: sco.is_traffic_light && sco.traffic_lights.is_empty() })
+    Some(ObjectModel { parts, lo, hi, abs_height: sco.absolute_height(), tree, helpers, attachments, surface, decal, holes, technical, editor_parts: sco.only_editor, paths: sco.paths.clone(), texts: model.text_textures.clone(), labels: label_names, lights: sco.traffic_lights.clone(), cycle: sco.traffic_lights_group, light_head: sco.is_traffic_light && sco.traffic_lights.is_empty() })
 }
 
 fn load_spline(path: &Path, omsi: &Path, content: &Path) -> Option<SplineModel> {
