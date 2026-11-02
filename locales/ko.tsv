@@ -2418,6 +2418,16 @@ Straight on	직진
 A piece straight on between arms that face each other	서로 마주 보는 접속부 사이의 직선 구간
 auto	자동
 Built by Auto-Junction from the arms	자동 교차로가 접속부로부터 생성
+Export a line map	노선도 내보내기
+lines	노선도
+ (lines alone)	 (노선만)
+Line map saved:	노선도 저장함:
+Over the map's roads	지도 도로망 위에
+The lines and stops alone	노선과 정류장만
+SVG and PNG; the lines chosen in View > Which lines	SVG와 PNG로 저장, 노선은 보기 > 표시할 노선에서 고른 것
+Lines on the map	노선 표시
+Which lines	표시할 노선
+All lines	모든 노선
 the plate could not be made from these arms	이 진입로들로 판을 만들 수 없었습니다
 Plate with kerbs and footways	연석과 보도가 있는 판
 Junctions as the Roads tool makes them: where roads cross, one ends on another or several end at one place, they are cut back and a plate is laid with rounded kerbs, footways and lanes through it	도로 도구가 만드는 것과 같은 교차로: 도로가 교차하거나, 한 도로가 다른 도로에서 끝나거나, 여러 도로가 한곳에서 끝나는 곳에서 도로가 잘리고 둥근 연석, 보도, 통과하는 차선이 있는 판이 깔립니다

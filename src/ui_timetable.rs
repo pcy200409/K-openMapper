@@ -32,6 +32,27 @@ const PICK_REACH: f64 = 12.0;
 /// An average bus with its stops: what a trip's time is guessed from (km/h).
 const BUS_SPEED: f64 = 22.0;
 
+/// Colours of the lines on the map, one a line in the order of the timetable.
+const LINE_COLOURS: [[f32; 4]; 8] = [
+    [0.25, 0.75, 1.0, 0.95],
+    [1.0, 0.45, 0.3, 0.95],
+    [0.45, 0.85, 0.35, 0.95],
+    [0.95, 0.8, 0.2, 0.95],
+    [0.8, 0.45, 0.95, 0.95],
+    [0.2, 0.85, 0.75, 0.95],
+    [1.0, 0.55, 0.8, 0.95],
+    [0.65, 0.65, 0.65, 0.95],
+];
+
+/// A trip of the lines on the map as last drawn: the stops and the network it was drawn
+/// for, its way and its stops (IDCode, where it stands, its name).
+struct Drawn {
+    stations: Vec<i64>,
+    net_key: u64,
+    way: Vec<DVec3>,
+    stops: Vec<(i64, DVec3, String)>,
+}
+
 /// A stop of the map: tile, IDCode, its name (the object's label) and where it stands.
 #[derive(Clone)]
 struct MapStop {
@@ -79,6 +100,10 @@ pub struct TimetableUi {
     fill_from: (u32, u32),
     fill_to: (u32, u32),
     layover: u32,
+    /// The lines drawn on the map (View > Lines on the map), by trip.
+    drawn: HashMap<String, Drawn>,
+    /// The stops of the lines drawn this frame, for their names: (where, name, colour).
+    drawn_stops: Vec<(DVec3, String, [f32; 4])>,
     /// The year the holidays are shown of.
     holiday_year: i32,
     holidays_open: bool,
@@ -95,18 +120,7 @@ fn minutes(t: &Trip) -> f32 {
 
 /// The trips a line runs: those its tours name and those that show its number.
 fn line_trips(tt: &Timetable, line: &Line) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for t in line.tours.iter().flat_map(|t| t.trips.iter()) {
-        if !out.iter().any(|x| x.eq_ignore_ascii_case(&t.trip)) && tt.trip(&t.trip).is_some() {
-            out.push(t.trip.clone());
-        }
-    }
-    for t in tt.trips.iter().filter(|t| t.line.trim().eq_ignore_ascii_case(line.name.trim())) {
-        if !out.iter().any(|x| x.eq_ignore_ascii_case(&t.name)) {
-            out.push(t.name.clone());
-        }
-    }
-    out
+    route::line_trips(tt, line)
 }
 
 fn small_button(ui: &mut egui::Ui, icon: Icon, hint: &str) -> bool {
@@ -341,6 +355,92 @@ impl TimetableUi {
             for s in &self.stops {
                 crate::editor::disc(&mut x.overlay, cam, s.pos + DVec3::Z * 0.2, w * 8.0, [0.96, 0.5, 0.19, 0.35]);
             }
+        }
+    }
+
+    /// The map's lines drawn in the view (View > Lines on the map): each trip's way in its
+    /// line's colour - along the track saved with it, else found along the roads - and its
+    /// stops. (Their names are painted by [`Self::paint_route_stops`].)
+    pub fn routes_overlay(&mut self, ed: &Editor, roots: Option<&Roots>, cam: &crate::camera::Camera, x: &mut FrameExtras) {
+        self.drawn_stops.clear();
+        let Some(doc) = ed.doc.as_ref() else { return };
+        if !ed.show_routes || doc.timetable.trips.is_empty() {
+            return;
+        }
+        // (the network takes seconds on a big map: for the lines on the map it is made again
+        // at most every half minute, not each second while tiles load or change)
+        let stale = self.net_built.is_none_or(|t| t.elapsed().as_secs() >= 30);
+        if (self.net.is_none() || stale) && !self.ensure_net(doc, roots) {
+            return;
+        }
+        let Some(net) = &self.net else { return };
+        let tt = &doc.timetable;
+        let w = (cam.distance * 0.004).clamp(0.08, 6.0) as f32;
+        let lift = DVec3::Z * 0.5;
+        let mut seen = std::collections::HashSet::new();
+        for (li, line) in tt.lines.iter().enumerate() {
+            if ed.route_line.as_ref().is_some_and(|l| !l.eq_ignore_ascii_case(&line.name)) {
+                continue;
+            }
+            let c = LINE_COLOURS[li % LINE_COLOURS.len()];
+            for name in line_trips(tt, line) {
+                let Some(trip) = tt.trip(&name) else { continue };
+                let k = lower(&name);
+                let ids = route::trip_stations(trip);
+                let stations: Vec<i64> = ids.iter().map(|s| s.0).collect();
+                if !self.drawn.get(&k).is_some_and(|d| d.stations == stations && d.net_key == self.net_key) {
+                    let mut stops = Vec::new();
+                    for (id, own) in &ids {
+                        let Some(p) = timetable::stop_world(doc, &mut self.files, *id) else { continue };
+                        let name = self.stops.iter().find(|s| s.id == *id).map(|s| s.name.clone()).filter(|n| !n.trim().is_empty()).or_else(|| tt.stop_name(*id).map(str::to_string)).or_else(|| own.clone()).unwrap_or_else(|| format!("#{id}"));
+                        stops.push((*id, p, name.replace('@', " ")));
+                    }
+                    let at: Vec<DVec3> = stops.iter().map(|s| s.1).collect();
+                    let way = route::trip_way(doc, net, trip, &at);
+                    self.drawn.insert(k.clone(), Drawn { stations, net_key: self.net_key, way, stops });
+                }
+                let d = &self.drawn[&k];
+                for s in d.way.windows(2) {
+                    crate::editor::line(&mut x.overlay, cam, s[0] + lift, s[1] + lift, w * 1.2, c);
+                }
+                for (id, p, name) in &d.stops {
+                    if seen.insert(*id) {
+                        crate::editor::disc(&mut x.overlay, cam, *p + DVec3::Z * 0.3, w * 4.0, c);
+                        self.drawn_stops.push((*p, name.clone(), c));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The names of the stops of the lines on the map, over them in the view (nearest
+    /// first; one that would lie over a nearer one is left out).
+    pub fn paint_route_stops(&self, ctx: &egui::Context, cam: &crate::camera::Camera, view: egui::Rect) {
+        if self.drawn_stops.is_empty() || !view.is_positive() {
+            return;
+        }
+        const REACH: f64 = 900.0;
+        let eye = cam.eye();
+        let mut near: Vec<(f64, &(DVec3, String, [f32; 4]))> = self.drawn_stops.iter().map(|s| ((s.0 - eye).length(), s)).filter(|(d, _)| *d < REACH).collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("route stops"))).with_clip_rect(view);
+        let font = egui::FontId::proportional(12.0);
+        let mut taken: Vec<egui::Rect> = Vec::new();
+        for (_, (p, name, c)) in near.into_iter().take(80) {
+            let Some((sx, sy)) = crate::selection::project(cam, *p + DVec3::Z * 3.0, view.width(), view.height()) else { continue };
+            let at = view.min + Vec2::new(sx, sy);
+            if !view.contains(at) {
+                continue;
+            }
+            let galley = painter.layout_no_wrap(name.clone(), font.clone(), Color32::WHITE);
+            let r = egui::Rect::from_center_size(at - Vec2::new(0.0, galley.size().y * 0.5), galley.size() + Vec2::new(10.0, 4.0));
+            if taken.iter().any(|t| t.intersects(r)) {
+                continue;
+            }
+            taken.push(r);
+            let fill = Color32::from_rgba_unmultiplied((c[0] * 120.0) as u8, (c[1] * 120.0) as u8, (c[2] * 120.0) as u8, 210);
+            painter.rect_filled(r, egui::CornerRadius::same(3), fill);
+            painter.galley(r.min + Vec2::new(5.0, 2.0), galley, Color32::WHITE);
         }
     }
 
