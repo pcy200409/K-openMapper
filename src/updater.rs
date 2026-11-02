@@ -14,8 +14,9 @@ use sha2::{Digest, Sha256};
 use crate::i18n::tr;
 use crate::install::Prefs;
 
-const LATEST: &str = "https://api.github.com/repos/openOMSI-org/openMapper/releases/latest";
-const PAGE: &str = "https://github.com/openOMSI-org/openMapper/releases/latest";
+// K-openMapper: updates come from K-openMapper's own releases (the official ones would replace this build)
+const LATEST: &str = "https://api.github.com/repos/pcy200409/K-openMapper/releases/latest";
+const PAGE: &str = "https://github.com/pcy200409/K-openMapper/releases/latest";
 
 /// What to do about new versions (`Prefs::update_mode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,9 +293,16 @@ fn platform() -> Option<(&'static str, &'static str, &'static str)> {
     Some((os.0, arch, os.1))
 }
 
-/// "1.2.3" or "v1.2.3" as numbers.
+/// "1.2.3" or "v1.2.3" as numbers; K-openMapper's "1.2.3-k4" as 1.2.3.4 (newer than 1.2.3).
 pub fn parse_version(s: &str) -> Option<Vec<u64>> {
-    s.trim().trim_start_matches('v').split('-').next()?.split('.').map(|p| p.parse().ok()).collect()
+    let s = s.trim().trim_start_matches('v');
+    let (base, k) = match s.split_once('-') {
+        Some((b, rest)) => (b, rest.strip_prefix('k').and_then(|n| n.parse::<u64>().ok())),
+        None => (s, None),
+    };
+    let mut v: Vec<u64> = base.split('.').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    v.extend(k);
+    Some(v)
 }
 
 pub fn newer(candidate: &str, current: &str) -> bool {
@@ -478,6 +486,10 @@ mod tests {
         assert!(!newer("v0.1.0", "0.1.0"));
         assert!(!newer("v0.0.9", "0.1.0"));
         assert!(!newer("nonsense", "0.1.0"));
+        assert!(newer("v0.1.20-k1", "0.1.20"));
+        assert!(newer("v0.1.20-k2", "0.1.20-k1"));
+        assert!(newer("v0.1.21", "0.1.20-k3"));
+        assert!(!newer("v0.1.20", "0.1.20-k1"));
     }
 
     #[test]
