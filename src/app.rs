@@ -2798,7 +2798,8 @@ impl App {
         }
         // the changes kept every few minutes (not in the middle of an edit, nor while an
         // earlier session's autosave is still offered: there is one, it would be written over)
-        let editing = self.mouse.left || self.ed.history.is_open() || self.recover.is_some() || self.chrono.in_session();
+        // (a screenshot run keeps none: it would be offered to the person's own next session)
+        let editing = self.mouse.left || self.ed.history.is_open() || self.recover.is_some() || self.chrono.in_session() || self.shot.is_some();
         self.autosave.tick(self.ed.doc.as_ref(), self.roots.as_ref().map(|r| r.content.as_path()), editing);
     }
 
