@@ -488,8 +488,22 @@ pub fn lanes_way(net: &Network, lanes: &[usize], ends: Option<(f64, f64)>) -> Ve
             carry = carry.or(first);
             continue;
         }
-        let s0 = carry.take().or(first).unwrap_or(0.0).clamp(0.0, lane.length());
-        let s1 = ends.map(|e| e.1).filter(|_| i + 1 == n).unwrap_or(lane.length()).clamp(s0, lane.length());
+        // (the next lane starting beside this one, short of its end: a change of lanes laid as
+        // splines of their own - the way leaves this lane there, not at its end, else it ran
+        // on to the end and back, an N)
+        let leave = lanes.get(i + 1).map(|&m| &net.lanes[m]).filter(|next| next.pts.len() >= 2).and_then(|next| {
+            let (along, off, _) = lane.project(next.pts[0].truncate());
+            let here = (lane.point_at((along + 1.0).min(lane.length())) - lane.point_at((along - 1.0).max(0.0))).truncate().normalize_or_zero();
+            let there = (next.pts[1] - next.pts[0]).truncate().normalize_or_zero();
+            (off > 0.3 && off < 8.0 && along < lane.length() - 2.0 && here.dot(there) > 0.9).then_some(along)
+        });
+        let s0 = carry.or(first).unwrap_or(0.0).clamp(0.0, lane.length());
+        if leave.is_some_and(|a| a <= s0 + 1.0) {
+            carry = carry.or(first);
+            continue;
+        }
+        carry = None;
+        let s1 = leave.or(ends.map(|e| e.1).filter(|_| i + 1 == n)).unwrap_or(lane.length()).clamp(s0, lane.length());
         let start = lane.point_at(s0);
         // a step sideways from where the last lane ended: eased in along this one
         let shift = out.last().map(|p| *p - start).filter(|d| {
