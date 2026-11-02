@@ -203,6 +203,25 @@ pub fn fonts() -> FontDefinitions {
     f
 }
 
+/// The system's Korean font (`OPENMAPPER_KO_FONT` names one), if any.
+pub(crate) fn korean_font() -> Option<Vec<u8>> {
+    let mut paths: Vec<String> = std::env::var("OPENMAPPER_KO_FONT").into_iter().collect();
+    let win = std::env::var("WINDIR").unwrap_or_else(|_| "C:/Windows".into());
+    for f in ["malgun.ttf", "NotoSansKR-VF.ttf", "gulim.ttc"] {
+        paths.push(format!("{win}/Fonts/{f}"));
+    }
+    for p in [
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/Library/Fonts/AppleGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    ] {
+        paths.push(p.into());
+    }
+    paths.iter().find_map(|p| std::fs::read(p).ok())
+}
+
 /// A label with an icon in front (the icon's own font, the text's own).
 pub fn labelled(icon: Icon, text: &str) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();

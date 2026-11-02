@@ -580,6 +580,10 @@ pub struct Editor {
     pub show_lanes: bool,
     /// The names of bus stops and start points float over them in the view.
     pub show_names: bool,
+    /// The map's lines are drawn in the view: their ways and stops (View > Lines on the map).
+    pub show_routes: bool,
+    /// Only this line is drawn (else all of them).
+    pub route_line: Option<String>,
     /// A window picks things on the map (the Lines window its stops): a click only notes
     /// what is under the cursor and where, nothing is selected or moved.
     pub pick_mode: bool,
@@ -745,6 +749,8 @@ impl Default for Editor {
             hide: [false; 3],
             show_lanes: false,
             show_names: true,
+            show_routes: false,
+            route_line: None,
             pick_mode: false,
             picked: None,
             link_pick: None,

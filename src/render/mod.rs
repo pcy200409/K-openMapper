@@ -2893,7 +2893,7 @@ fn push_object(groups: &mut Groups, key: &str, model: &Arc<ObjectModel>, label: 
     }
     let inst = Instance::new(m, tint);
     let radius = (model.centre().length() + model.radius()) * scale;
-    groups.entry(key.to_string()).or_default().1.push(Pending { inst: if model.surface { inst.surface(SURF_OBJECT) } else { inst }, radius, sel });
+    groups.entry(key.to_string()).or_default().1.push(Pending { inst: if model.surface || model.decal { inst.surface(SURF_OBJECT) } else { inst }, radius, sel });
 }
 
 /// Batches (one per model, in a fixed order) from the instances gathered, numbered from
