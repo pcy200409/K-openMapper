@@ -1,11 +1,13 @@
 # Builds openMapper for Windows, macOS and Linux, each for x64 and ARM64, with the
-# tools/package-* scripts. A tag v<version> publishes the packages as that release on GitHub, with
-# the notes of that version from CHANGELOG.md (Windows also gets a setup.exe, macOS a .dmg); run by hand, the packages are only kept with the run.
+# tools/package-* scripts (Windows also gets a setup.exe, macOS a .dmg).
+# K-openMapper: a push of the `release` branch publishes the packages as release
+# v<openMapper version>-k<N> (kmapper/version.sh) with the notes in kmapper/release-notes.md;
+# run by hand on another branch, the packages are only kept with the run.
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [release]
   workflow_dispatch:
 
 concurrency:
@@ -20,6 +22,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: v
+        run: echo "version=$(sh kmapper/version.sh)" >> "$GITHUB_OUTPUT"
+      - run: echo "### K-openMapper ${{ steps.v.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -28,16 +42,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Linux libraries
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
-      - name: The tag is the version in Cargo.toml
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml says $version"; exit 1; }
-          grep -q "^## $version " CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
       - run: cargo test --release --locked
 
   package:
-    needs: test
+    needs: [version, test]
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +99,9 @@ jobs:
             choco install nsis -y --no-progress || sleep 30
           done
           echo "C:\\Program Files (x86)\\NSIS" >> "$GITHUB_PATH"
+      - name: K-openMapper version
+        shell: bash
+        run: sh kmapper/set-version.sh "${{ needs.version.outputs.version }}"
       - run: ${{ matrix.run }}
       - name: Installer installs and uninstalls
         if: matrix.name == 'windows-x64'
@@ -119,11 +130,13 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, package]
+    if: github.ref == 'refs/heads/release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -132,35 +145,15 @@ jobs:
           merge-multiple: true
       - name: Notes and checksums
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v v="$version" '$0 ~ "^## " v " " {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
-          [ -s notes.md ] || { echo "::error::no notes for $version in CHANGELOG.md"; exit 1; }
+          sed "s/<버전>/$VERSION/g" kmapper/release-notes.md > notes.md
           (cd packages && sha256sum * > SHA256SUMS && cat SHA256SUMS)
           ls -l packages
       - uses: softprops/action-gh-release@v3
         with:
-          name: openMapper ${{ github.ref_name }}
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: K-openMapper v${{ needs.version.outputs.version }}
           body_path: notes.md
           files: packages/*
           fail_on_unmatched_files: true
-
-  readme:
-    # the download table in README.md names the files of the latest release
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-      - name: Point the README at this release
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          sed -i -E "s/openMapper-[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?-(windows|macos|linux)/openMapper-${version}-\2/g" README.md
-          if git diff --quiet; then exit 0; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "README: downloads of ${version}"
-          git pull --rebase origin main
-          git push origin main
+          make_latest: true

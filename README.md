@@ -1,3 +1,12 @@
+> [!NOTE]
+> **K-openMapper**는 [openMapper](https://github.com/openOMSI-org/openMapper)(openOMSI 맵 편집기)에
+> 한국어 사용자용 수정을 얹은 **비공식 독립 포크**입니다. 공식 프로젝트와 관계없으며, 이 빌드의 문제는
+> [K-openMapper 이슈](https://github.com/pcy200409/K-openMapper/issues)로 알려 주세요.
+> 내려받기: [K-openMapper 릴리스](https://github.com/pcy200409/K-openMapper/releases/latest) ·
+> 더한 것: [`kmapper/release-notes.md`](kmapper/release-notes.md) · 라이선스: 원본과 같은 AGPL-3.0-only.
+> 브랜치: `main` = openMapper 그대로, `branding`·`patch/*` = 수정, `release` = 합친 빌드(푸시하면 릴리스).
+> 아래는 원본 README입니다.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logos/openmapper-wordmark-light.svg">
