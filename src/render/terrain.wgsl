@@ -5,11 +5,13 @@ struct TileU {
     origin: vec4<f32>,
     // x 1: the tile is selected (tiles tool); y: how much its imagery covers the ground
     flags: vec4<f32>,
+    // the [groundtex] layer painted through each channel of mask_a, mask_b, mask_c (0: none)
+    slots: array<vec4<f32>, 3>,
 };
 
 struct Ground {
     // per layer: texture repeats per tile, detail repeats, 0, 0
-    layers: array<vec4<f32>, 9>,
+    layers: array<vec4<f32>, 64>,
     count: vec4<f32>,
 };
 
@@ -23,6 +25,7 @@ struct Ground {
 // where there is none; src/render/imagery.rs)
 @group(1) @binding(5) var imagery: texture_2d<f32>;
 @group(1) @binding(6) var imagery_sampler: sampler;
+@group(1) @binding(7) var mask_c: texture_2d<f32>;
 
 @group(2) @binding(0) var<uniform> ground: Ground;
 @group(2) @binding(1) var tex: texture_2d_array<f32>;
@@ -71,12 +74,16 @@ fn fs(i: VsOut) -> @location(0) vec4<f32> {
     let keep = textureSample(cut, mask_sampler, uv).a;
     let ma = textureSample(mask_a, mask_sampler, muv);
     let mb = textureSample(mask_b, mask_sampler, muv);
+    let mc = textureSample(mask_c, mask_sampler, muv);
     let n_layers = i32(ground.count.x);
     var c = layer(0, uv);
-    var masks = array<f32, 8>(ma.r, ma.g, ma.b, ma.a, mb.r, mb.g, mb.b, mb.a);
-    for (var k = 1; k < 9; k = k + 1) {
-        if (k < n_layers) {
-            c = mix(c, layer(k, uv), masks[k - 1]);
+    var masks = array<vec4<f32>, 3>(ma, mb, mc);
+    for (var s = 0; s < 3; s = s + 1) {
+        for (var ch = 0; ch < 4; ch = ch + 1) {
+            let k = i32(tile.slots[s][ch]);
+            if (k > 0 && k < n_layers) {
+                c = mix(c, layer(k, uv), masks[s][ch]);
+            }
         }
     }
     let sat = textureSample(imagery, imagery_sampler, muv);
