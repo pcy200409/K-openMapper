@@ -393,3 +393,142 @@ pub fn find(net: &Network, positions: &[Option<DVec3>], left_hand: bool) -> Rout
     r.legs = legs;
     r
 }
+
+/// A trip's stops: its `[station_typ2]` IDCodes, or an older file's `[station]` blocks (the
+/// stop's IDCode on the first line, its name on the third), with the name such a block gives.
+pub fn trip_stations(trip: &omsi_timetable::Trip) -> Vec<(i64, Option<String>)> {
+    if trip.stations.is_empty() {
+        trip.stations_legacy.iter().filter_map(|s| Some((s.first()?.trim().parse().ok()?, s.get(2).map(|n| n.trim().to_string())))).collect()
+    } else {
+        trip.stations.iter().map(|id| (*id, None)).collect()
+    }
+}
+
+/// The trips of a line: those its tours name and those that show its number.
+pub fn line_trips(tt: &super::Timetable, line: &omsi_timetable::Line) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in line.tours.iter().flat_map(|t| t.trips.iter()) {
+        if !out.iter().any(|x| x.eq_ignore_ascii_case(&t.trip)) && tt.trip(&t.trip).is_some() {
+            out.push(t.trip.clone());
+        }
+    }
+    for t in tt.trips.iter().filter(|t| t.line.trim().eq_ignore_ascii_case(line.name.trim())) {
+        if !out.iter().any(|x| x.eq_ignore_ascii_case(&t.name)) {
+            out.push(t.name.clone());
+        }
+    }
+    out
+}
+
+/// A trip's way in the world, to draw: along the track it names (the lanes the game drives),
+/// else found along the roads between its stops (`stops`: where they stand, in order).
+pub fn trip_way(doc: &crate::doc::Document, net: &Network, trip: &omsi_timetable::Trip, stops: &[DVec3]) -> Vec<DVec3> {
+    use super::network::PathKey;
+    let tt = &doc.timetable;
+    // (the track named on the trip's first `[trip]` line, else the one of its own name)
+    let track = Some(trip.display_name.trim()).filter(|n| !n.is_empty()).and_then(|n| tt.track(n)).or_else(|| tt.track(&trip.name));
+    if let Some(track) = track {
+        let order = if tt.order.is_empty() { &doc.order } else { &tt.order };
+        // each entry's lanes (the path's two ways)
+        let options: Vec<Vec<usize>> = track
+            .entries
+            .iter()
+            .filter_map(|e| match e.values[..] {
+                [id, path, tile, ..] => order.get(tile as usize).and_then(|t| net.by_key.get(&PathKey { tile: *t, id: id as i64, path: path as usize })).cloned(),
+                _ => None,
+            })
+            .map(|l| l.into_iter().filter(|&i| net.lanes[i].pts.len() >= 2).collect::<Vec<_>>())
+            .filter(|l: &Vec<usize>| !l.is_empty())
+            .collect();
+        let ends = |l: usize| (net.lanes[l].pts[0], net.lanes[l].pts[net.lanes[l].pts.len() - 1]);
+        let mut lanes: Vec<usize> = Vec::new();
+        for (i, choice) in options.iter().enumerate() {
+            // (the way that goes on from where the last ended, towards the next)
+            let score = |l: usize| {
+                let (a, b) = ends(l);
+                let from = lanes.last().map(|&p| (a - ends(p).1).length()).unwrap_or(0.0);
+                let to = options.get(i + 1).map(|n| n.iter().map(|&m| (ends(m).0 - b).length()).fold(f64::MAX, f64::min)).unwrap_or(0.0);
+                from + to
+            };
+            if let Some(&best) = choice.iter().min_by(|a, b| score(**a).total_cmp(&score(**b))) {
+                lanes.push(best);
+            }
+        }
+        let way = lanes_way(net, &lanes, None);
+        if way.len() >= 2 {
+            return way;
+        }
+    }
+    if stops.len() < 2 {
+        return Vec::new();
+    }
+    let pos: Vec<Option<DVec3>> = stops.iter().map(|p| Some(*p)).collect();
+    let r = find(net, &pos, doc.global.left_hand_traffic);
+    match (r.stops.first(), r.stops.last()) {
+        (Some(a), Some(b)) if a.0 <= b.0 => lanes_way(net, &r.lanes[a.0..=b.0], Some((a.1.along, b.1.along))),
+        _ => Vec::new(),
+    }
+}
+
+/// The line along lanes (`ends`: where on the first and the last it starts and stops). A lane
+/// changed off at its start is not driven, and a change to the lane beside is drawn as a bus
+/// takes it: an S easing across over the metres after it, not a step (nor, where a track
+/// names both lanes whole, an N back and forth).
+pub fn lanes_way(net: &Network, lanes: &[usize], ends: Option<(f64, f64)>) -> Vec<DVec3> {
+    let n = lanes.len();
+    let mut out: Vec<DVec3> = Vec::new();
+    let mut carry: Option<f64> = None;
+    for (i, &l) in lanes.iter().enumerate() {
+        let lane = &net.lanes[l];
+        if lane.pts.len() < 2 {
+            continue;
+        }
+        let first = ends.map(|e| e.0).filter(|_| i == 0);
+        if i + 1 < n && lane.side.contains(&lanes[i + 1]) {
+            carry = carry.or(first);
+            continue;
+        }
+        // (the next lane starting beside this one, short of its end: a change of lanes laid as
+        // splines of their own - the way leaves this lane there, not at its end, else it ran
+        // on to the end and back, an N)
+        let leave = lanes.get(i + 1).map(|&m| &net.lanes[m]).filter(|next| next.pts.len() >= 2).and_then(|next| {
+            let (along, off, _) = lane.project(next.pts[0].truncate());
+            let here = (lane.point_at((along + 1.0).min(lane.length())) - lane.point_at((along - 1.0).max(0.0))).truncate().normalize_or_zero();
+            let there = (next.pts[1] - next.pts[0]).truncate().normalize_or_zero();
+            (off > 0.3 && off < 8.0 && along < lane.length() - 2.0 && here.dot(there) > 0.9).then_some(along)
+        });
+        let s0 = carry.or(first).unwrap_or(0.0).clamp(0.0, lane.length());
+        if leave.is_some_and(|a| a <= s0 + 1.0) {
+            carry = carry.or(first);
+            continue;
+        }
+        carry = None;
+        let s1 = leave.or(ends.map(|e| e.1).filter(|_| i + 1 == n)).unwrap_or(lane.length()).clamp(s0, lane.length());
+        let start = lane.point_at(s0);
+        // a step sideways from where the last lane ended: eased in along this one
+        let shift = out.last().map(|p| *p - start).filter(|d| {
+            let g = d.truncate().length();
+            g > 0.3 && g < 12.0
+        });
+        let span = shift.map(|d| (d.truncate().length() * 7.0).clamp(10.0, 40.0).min((s1 - s0) * 0.8)).unwrap_or(0.0);
+        let mut at: Vec<f64> = vec![s0];
+        if span > 1.0 {
+            let steps = (span / 1.5).ceil() as usize;
+            at.extend((1..=steps).map(|k| s0 + span * k as f64 / steps as f64));
+        }
+        let from = s0 + span;
+        at.extend(lane.along.iter().copied().filter(|a| *a > from && *a < s1));
+        at.push(s1);
+        for s in at {
+            let mut p = lane.point_at(s);
+            if let (Some(d), true) = (shift, span > 1.0) {
+                let t = ((s - s0) / span).clamp(0.0, 1.0);
+                p += d * (1.0 - t * t * (3.0 - 2.0 * t));
+            }
+            if out.last().is_none_or(|q| (*q - p).length() > 1e-3) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
