@@ -200,6 +200,9 @@ pub enum Action {
     Export,
     /// A plan of the map as an SVG picture.
     ExportPlan,
+    /// A map of the lines as SVG and PNG pictures: over the map's ground and roads, the lines
+    /// alone, or both.
+    ExportLineMap { background: bool, plain: bool },
     /// Do it without asking about unsaved changes.
     Force(Box<Action>),
     /// Save, then do it; nothing more if the save fails.
@@ -258,6 +261,10 @@ pub struct UiState {
     pub groups: crate::ui_groups::Groups,
     /// The window of the map's earlier versions (backups of its saves).
     pub versions_open: bool,
+    /// File > Export a line map leaves out the version over the map's ground, or the one of
+    /// the lines alone.
+    pub line_map_no_ground: bool,
+    pub line_map_no_plain: bool,
     /// The window of the edits made (undo and redo by a click).
     pub history_open: bool,
     /// The preferences' starred and recently used assets, for the catalogue.
@@ -334,6 +341,8 @@ impl Default for UiState {
             find: Default::default(),
             groups: Default::default(),
             versions_open: false,
+            line_map_no_ground: false,
+            line_map_no_plain: false,
             history_open: false,
             favourites: Vec::new(),
             recent_assets: Vec::new(),
@@ -904,6 +913,17 @@ fn menu_bar(root: &mut egui::Ui, st: &mut UiState, ed: &mut Editor, can_undo: bo
                 if menu_item(ui, Some(Icon::Map), tr("Export a plan of the map…", "Экспорт плана карты…"), "", true) {
                     actions.push(Action::ExportPlan);
                 }
+                ui.menu_button(icons::labelled(Icon::Route, tr("Export a line map", "Экспорт схемы маршрутов")), |ui| {
+                    let (mut ground, mut plain) = (!st.line_map_no_ground, !st.line_map_no_plain);
+                    check(ui, &mut ground, tr("Over the map's roads", "Поверх дорог карты"));
+                    check(ui, &mut plain, tr("The lines and stops alone", "Только маршруты и остановки"));
+                    (st.line_map_no_ground, st.line_map_no_plain) = (!ground, !plain);
+                    ui.label(egui::RichText::new(tr("SVG and PNG; the lines chosen in View > Which lines", "SVG и PNG; маршруты, выбранные в Вид > Какие маршруты")).small().weak());
+                    if ui.add_enabled(ground || plain, egui::Button::new(tr("Export…", "Экспорт…"))).clicked() {
+                        actions.push(Action::ExportLineMap { background: ground, plain });
+                        ui.close();
+                    }
+                });
                 if menu_item(ui, Some(Icon::Import), tr("Import assets…", "Импорт ассетов…"), "", true) {
                     actions.push(Action::Import);
                 }
@@ -975,6 +995,21 @@ fn menu_bar(root: &mut egui::Ui, st: &mut UiState, ed: &mut Editor, can_undo: bo
                 check(ui, &mut ed.show_technical, icons::labelled(icon, tr("What the game does not show", "То, чего не видно в игре")));
                 check(ui, &mut ed.show_lanes, icons::labelled(Icon::Route, tr("AI lanes", "Полосы ИИ")));
                 check(ui, &mut ed.show_names, icons::labelled(Icon::Bus, tr("Names of stops and start points", "Названия остановок и точек старта")));
+                check(ui, &mut ed.show_routes, icons::labelled(Icon::Route, tr("Lines on the map", "Маршруты на карте")));
+                let lines: Vec<String> = ed.doc.as_ref().map(|d| d.timetable.lines.iter().map(|l| l.name.clone()).collect()).unwrap_or_default();
+                if ed.show_routes && lines.len() > 1 {
+                    ui.menu_button(icons::labelled(Icon::Route, tr("Which lines", "Какие маршруты")), |ui| {
+                        if radio(ui, ed.route_line.is_none(), tr("All lines", "Все маршруты")).clicked() {
+                            ed.route_line = None;
+                        }
+                        for l in lines {
+                            let on = ed.route_line.as_ref().is_some_and(|x| x.eq_ignore_ascii_case(&l));
+                            if radio(ui, on, l.clone()).clicked() {
+                                ed.route_line = Some(l);
+                            }
+                        }
+                    });
+                }
                 ui.menu_button(icons::labelled(Icon::Layers, tr("Show", "Показывать")), |ui| {
                     // (what is hidden cannot be clicked either: handy in a dense town)
                     for (i, name, icon) in [(0, tr("Trees", "Деревья"), Icon::Tree), (1, tr("Objects", "Объекты"), Icon::Building), (2, tr("Roads and splines", "Дороги и сплайны"), Icon::Road)] {

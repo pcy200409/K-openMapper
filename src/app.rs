@@ -259,6 +259,11 @@ impl App {
             app.ui.help_open = true;
             app.ui.settings_tab = 3;
         }
+        // OPENMAPPER_ROUTES=all|<line>: the lines drawn on the map from the start
+        if let Ok(l) = std::env::var("OPENMAPPER_ROUTES") {
+            app.ed.show_routes = true;
+            app.ed.route_line = Some(l).filter(|l| !l.is_empty() && l != "all");
+        }
         app
     }
 
@@ -298,6 +303,10 @@ impl App {
         // (a screenshot run stays on top: a window under another gets no frames to take)
         if self.shot.is_some() {
             attrs = attrs.with_window_level(winit::window::WindowLevel::AlwaysOnTop).with_active(false);
+        }
+        // OPENMAPPER_WINDOW_AT=x,y: the window there (a check run on another screen)
+        if let Some(v) = std::env::var("OPENMAPPER_WINDOW_AT").ok().map(|c| c.split(',').filter_map(|x| x.trim().parse::<i32>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 2) {
+            attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(v[0], v[1]));
         }
         crate::logging::stage("creating the window");
         let window = Arc::new(el.create_window(attrs)?);
@@ -1446,6 +1455,41 @@ impl App {
                     }
                 }
             }
+            Action::ExportLineMap { background, plain } => {
+                if let Some(doc) = &self.ed.doc {
+                    let name = doc.dir.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "map".into());
+                    let title = tr("Export a line map", "Экспорт схемы маршрутов");
+                    if let Some(out) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).set_file_name(format!("{name} {}.svg", tr("lines", "маршруты"))).set_title(title).save_file() {
+                        let stem = out.with_extension("");
+                        let mut written = Vec::new();
+                        let mut failed = None;
+                        // (both: the one over the roads keeps the name, the other is marked)
+                        for (on, ground, mark) in [(background, true, ""), (plain, false, if background { tr(" (lines alone)", " (только маршруты)") } else { "" })] {
+                            if !on {
+                                continue;
+                            }
+                            let opts = crate::plan::Options { background: ground, line: self.ed.route_line.clone() };
+                            let pic = crate::plan::picture(doc, &self.lib, &omsi_cfg::content_roots(), &opts);
+                            for ext in ["svg", "png"] {
+                                let file = PathBuf::from(format!("{}{mark}.{ext}", stem.display()));
+                                match crate::plan::write(&pic, &file) {
+                                    Ok(()) => written.push(file),
+                                    Err(e) => failed = Some(format!("{}: {e}", file.display())),
+                                }
+                            }
+                        }
+                        match failed {
+                            Some(e) => self.ed.error(e),
+                            None => {
+                                self.ed.toast(format!("{} {}", tr("Line map saved:", "Схема сохранена:"), written.iter().map(|f| f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).collect::<Vec<_>>().join(", ")));
+                                if let Some(f) = written.first() {
+                                    reveal(f);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Action::MergeTiles => {
                 if let Some(r) = &self.roots {
                     self.ui.merge.show(install::list_maps(r));
@@ -2438,6 +2482,9 @@ impl App {
             // (the pictures taken of the view are clean of them)
             if !self.snapshot {
                 crate::ui_edit::paint_names(&ctx, &self.ed, &self.lib, &self.cam, self.view);
+                if self.ed.show_routes {
+                    self.tt.paint_route_stops(&ctx, &self.cam, self.view);
+                }
                 if let (Some(sel), Some(doc), Some(a)) = (self.ed.path_numbers.filter(|s| self.ed.selected == Some(*s)), self.ed.doc.as_ref(), self.assets.as_mut()) {
                     crate::ui_edit::paint_path_numbers(&ctx, &crate::lanes::of_one(doc, a, sel), &self.cam, self.view);
                 }
@@ -2613,6 +2660,7 @@ impl App {
                 let t_x = Instant::now();
                 let mut extras = self.ed.extras(&self.cam, assets);
                 self.tt.overlay(&self.ed, &self.cam, &mut extras);
+                self.tt.routes_overlay(&self.ed, self.roots.as_ref(), &self.cam, &mut extras);
                 g.renderer.profile.add("extras", crate::render::profile::ms(t_x));
                 let t_geo = Instant::now();
                 self.geo.feed(&mut g.renderer.imagery, &g.gpu, &self.ed, DVec2::new(self.cam.target.x, self.cam.target.y));
@@ -2866,7 +2914,8 @@ impl App {
         }
         // the changes kept every few minutes (not in the middle of an edit, nor while an
         // earlier session's autosave is still offered: there is one, it would be written over)
-        let editing = self.mouse.left || self.ed.history.is_open() || self.recover.is_some() || self.chrono.in_session();
+        // (a screenshot run keeps none: it would be offered to the person's own next session)
+        let editing = self.mouse.left || self.ed.history.is_open() || self.recover.is_some() || self.chrono.in_session() || self.shot.is_some();
         self.autosave.tick(self.ed.doc.as_ref(), self.roots.as_ref().map(|r| r.content.as_path()), editing);
     }
 
