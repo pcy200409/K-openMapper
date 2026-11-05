@@ -124,12 +124,20 @@ struct MatUniform {
 struct TileUniform {
     origin: [f32; 4],
     flags: [f32; 4],
+    /// The `[groundtex]` layer painted through each mask channel (0: none).
+    slots: [[f32; 4]; MASK_TEXTURES],
 }
+
+/// Paint masks a tile can have, four layers in each: a tile shows the last
+/// `4 * MASK_TEXTURES` of the layers painted on it (OMSI draws the later ones on top).
+const MASK_TEXTURES: usize = 3;
+/// The `[groundtex]` layers the ground draws.
+const GROUND_LAYERS: usize = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GroundUniform {
-    layers: [[f32; 4]; 9],
+    layers: [[f32; 4]; GROUND_LAYERS],
     count: [f32; 4],
 }
 
@@ -191,7 +199,7 @@ struct GpuTile {
     uniform: wgpu::Buffer,
     /// Its own paint masks, made when it has paint (else the shared blank one: a tile of
     /// plain ground costs the GPU its terrain alone, so a map of thousands of tiles fits).
-    masks: Option<[wgpu::Texture; 2]>,
+    masks: Option<[wgpu::Texture; MASK_TEXTURES]>,
     /// Where the ground is cut away under roads (alpha 0), `CUT` texels a side; its own only
     /// while something is cut (else the shared uncut one).
     cut: Option<wgpu::Texture>,
@@ -203,10 +211,13 @@ struct GpuTile {
     /// indices, index count; openOMSI's `terrain_hole_walls`).
     walls: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
     /// What its uniform holds now.
-    uniform_now: [f32; 8],
+    uniform_now: [f32; 8 + 4 * MASK_TEXTURES],
+    /// The layer of each mask channel (see `TileUniform::slots`).
+    slots: [[f32; 4]; MASK_TEXTURES],
     /// Its paint masks' and ground cut's views (the bind group is made again with them
-    /// when its imagery changes) and the imagery's revision bound.
-    views: [wgpu::TextureView; 3],
+    /// when its imagery changes) and the imagery's revision bound: masks 0 and 1, the
+    /// cut, then the further masks.
+    views: [wgpu::TextureView; 1 + MASK_TEXTURES],
     imagery_rev: u64,
     /// Its box relative to the render anchor.
     bbox: Aabb,
@@ -567,7 +578,7 @@ fn upload_image(device: &wgpu::Device, queue: &wgpu::Queue, img: &omsi_texture::
 }
 
 /// A tile's bind group: its uniform, paint masks, ground cut and imagery.
-fn tile_bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, views: &[wgpu::TextureView; 3], mask_sampler: &wgpu::Sampler, imagery: &imagery::Imagery, k: TileKey) -> wgpu::BindGroup {
+fn tile_bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, views: &[wgpu::TextureView; 1 + MASK_TEXTURES], mask_sampler: &wgpu::Sampler, imagery: &imagery::Imagery, k: TileKey) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("tile"),
         layout,
@@ -579,6 +590,7 @@ fn tile_bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wg
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&views[2]) },
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(imagery.view(k).0) },
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(&imagery.sampler) },
+            wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::TextureView(&views[3]) },
         ],
     })
 }
@@ -726,7 +738,7 @@ impl Renderer {
         let (shadow_globals, shadow_globals_bind) = mk_globals(&no_shadow);
         let tile_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tile"),
-            entries: &[uniform_entry(0), texture_entry(1, wgpu::TextureViewDimension::D2), texture_entry(2, wgpu::TextureViewDimension::D2), sampler_entry(3), texture_entry(4, wgpu::TextureViewDimension::D2), texture_entry(5, wgpu::TextureViewDimension::D2), sampler_entry(6)],
+            entries: &[uniform_entry(0), texture_entry(1, wgpu::TextureViewDimension::D2), texture_entry(2, wgpu::TextureViewDimension::D2), sampler_entry(3), texture_entry(4, wgpu::TextureViewDimension::D2), texture_entry(5, wgpu::TextureViewDimension::D2), sampler_entry(6), texture_entry(7, wgpu::TextureViewDimension::D2)],
         });
         let ground_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ground"),
@@ -1417,10 +1429,10 @@ impl Renderer {
             if need_new {
                 let vb = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile vb"), size: (TERRAIN_SAMPLES * TERRAIN_SAMPLES * std::mem::size_of::<TerrainVertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
                 let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("tile u"), size: std::mem::size_of::<TileUniform>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-                let views = [self.zero_mask.clone(), self.zero_mask.clone(), self.uncut.clone()];
+                let views = [self.zero_mask.clone(), self.zero_mask.clone(), self.uncut.clone(), self.zero_mask.clone()];
                 let bind = tile_bind(device, &self.tile_layout, &uniform, &views, &self.mask_sampler, &self.imagery, k);
                 let imagery_rev = self.imagery.view(k).1;
-                self.tiles.insert(k, GpuTile { vb, uniform, masks: None, cut: None, cut_key: 0, bind, terrain_rev: 0, mask_rev: 0, walls: None, uniform_now: [f32::NAN; 8], views, imagery_rev, bbox: Aabb::ALL });
+                self.tiles.insert(k, GpuTile { vb, uniform, masks: None, cut: None, cut_key: 0, bind, terrain_rev: 0, mask_rev: 0, walls: None, uniform_now: [f32::NAN; 8 + 4 * MASK_TEXTURES], slots: [[0.0; 4]; MASK_TEXTURES], views, imagery_rev, bbox: Aabb::ALL });
             }
             let gt = self.tiles.get_mut(&k).unwrap();
             if gt.imagery_rev != self.imagery.view(k).1 {
@@ -1429,12 +1441,6 @@ impl Renderer {
             }
             let o = tile_origin(k) - anchor.truncate();
             let selected = extras.highlight_tile == Some(k);
-            let u = TileUniform { origin: [o.x as f32, o.y as f32, 0.0, 0.0], flags: [if selected { 1.0 } else { 0.0 }, self.imagery.opacity(k), 0.0, 0.0] };
-            let now: [f32; 8] = bytemuck::cast(u);
-            if bytemuck::cast::<_, [u32; 8]>(now) != bytemuck::cast::<_, [u32; 8]>(gt.uniform_now) {
-                gt.uniform_now = now;
-                queue.write_buffer(&gt.uniform, 0, bytemuck::bytes_of(&u));
-            }
             if gt.terrain_rev != t.terrain_rev {
                 gt.terrain_rev = t.terrain_rev;
                 let verts = terrain_vertices(doc, k);
@@ -1445,12 +1451,22 @@ impl Renderer {
             }
             if gt.mask_rev != t.mask_rev {
                 gt.mask_rev = t.mask_rev;
-                let painted = (1..9).any(|layer| matches!(t.masks.get(layer), Some(Some(_))) && doc.global.ground_textures.get(layer).is_some());
-                if !painted {
+                // (the layers painted here, the last ones when there are more than the masks
+                // hold: they lie on top)
+                let mut painted: Vec<usize> = (1..t.masks.len().min(GROUND_LAYERS)).filter(|&layer| matches!(t.masks.get(layer), Some(Some(_))) && doc.global.ground_textures.get(layer).is_some()).collect();
+                if painted.len() > 4 * MASK_TEXTURES {
+                    painted.drain(..painted.len() - 4 * MASK_TEXTURES);
+                }
+                gt.slots = [[0.0; 4]; MASK_TEXTURES];
+                for (i, layer) in painted.iter().enumerate() {
+                    gt.slots[i / 4][i % 4] = *layer as f32;
+                }
+                if painted.is_empty() {
                     // (no paint: the shared blank mask)
                     if gt.masks.take().is_some() {
                         gt.views[0] = self.zero_mask.clone();
                         gt.views[1] = self.zero_mask.clone();
+                        gt.views[3] = self.zero_mask.clone();
                         gt.bind = tile_bind(device, &self.tile_layout, &gt.uniform, &gt.views, &self.mask_sampler, &self.imagery, k);
                     }
                 } else {
@@ -1467,16 +1483,17 @@ impl Renderer {
                                 view_formats: &[],
                             })
                         };
-                        let masks = [mk(), mk()];
+                        let masks: [wgpu::Texture; MASK_TEXTURES] = std::array::from_fn(|_| mk());
                         gt.views[0] = masks[0].create_view(&Default::default());
                         gt.views[1] = masks[1].create_view(&Default::default());
+                        gt.views[3] = masks[2].create_view(&Default::default());
                         gt.masks = Some(masks);
                         gt.bind = tile_bind(device, &self.tile_layout, &gt.uniform, &gt.views, &self.mask_sampler, &self.imagery, k);
                     }
-                    for (half, tex) in gt.masks.as_ref().unwrap().iter().enumerate() {
+                    for (n, tex) in gt.masks.as_ref().unwrap().iter().enumerate() {
                         let mut data = vec![0u8; 256 * 256 * 4];
                         for ch in 0..4 {
-                            let layer = 1 + half * 4 + ch;
+                            let Some(&layer) = painted.get(n * 4 + ch) else { continue };
                             let (Some(Some(m)), Some(g)) = (t.masks.get(layer), doc.global.ground_textures.get(layer)) else { continue };
                             let size = crate::doc::mask_size(g);
                             for y in 0..256 {
@@ -1493,6 +1510,12 @@ impl Renderer {
                         );
                     }
                 }
+            }
+            let u = TileUniform { origin: [o.x as f32, o.y as f32, 0.0, 0.0], flags: [if selected { 1.0 } else { 0.0 }, self.imagery.opacity(k), 0.0, 0.0], slots: gt.slots };
+            let now: [f32; 8 + 4 * MASK_TEXTURES] = bytemuck::cast(u);
+            if bytemuck::cast::<_, [u32; 8 + 4 * MASK_TEXTURES]>(now) != bytemuck::cast::<_, [u32; 8 + 4 * MASK_TEXTURES]>(gt.uniform_now) {
+                gt.uniform_now = now;
+                queue.write_buffer(&gt.uniform, 0, bytemuck::bytes_of(&u));
             }
         }
 
@@ -2198,7 +2221,7 @@ impl Renderer {
             }
             None
         };
-        let layers: Vec<_> = doc.global.ground_textures.iter().take(9).collect();
+        let layers: Vec<_> = doc.global.ground_textures.iter().take(GROUND_LAYERS).collect();
         let mut key = seasons.join("|");
         let mut imgs = Vec::new();
         for g in &layers {
@@ -2243,7 +2266,7 @@ impl Renderer {
         };
         let tex = mk_array(512, &|i| imgs.get(i).and_then(|x| x.0.as_ref()).map(|t| t.image.clone()), [96, 120, 70, 255]);
         let det = mk_array(256, &|i| imgs.get(i).and_then(|x| x.1.as_ref()).map(|t| t.image.clone()), [255, 255, 255, 255]);
-        let mut u = GroundUniform { layers: [[1.0, 1.0, 0.0, 0.0]; 9], count: [imgs.len() as f32, 0.0, 0.0, 0.0] };
+        let mut u = GroundUniform { layers: [[1.0, 1.0, 0.0, 0.0]; GROUND_LAYERS], count: [imgs.len() as f32, 0.0, 0.0, 0.0] };
         for (i, x) in imgs.iter().enumerate() {
             u.layers[i] = [x.2, x.3, 0.0, 0.0];
         }
